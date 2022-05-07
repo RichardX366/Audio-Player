@@ -319,7 +319,6 @@ const App: React.FC = () => {
     );
     audio.ontimeupdate = () => setCurrentTime(audio.currentTime);
     audio.ondurationchange = () => setDuration(audio.duration);
-    console.log(setCurrentAlbum);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
