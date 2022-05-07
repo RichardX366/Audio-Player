@@ -1,28 +1,127 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { gapi } from 'gapi-script';
 import googleLogo from './google.png';
+import emptyMusic from './emptyMusic.jpg';
 import Spinner from './components/Spinner';
-import Notification, { error } from './components/Notification';
+import Notification, { error, notify } from './components/Notification';
 import { ITags } from 'id3-parser/lib/interface';
 import { parse } from 'id3-parser';
 import { db, Song } from './db';
 import { useLiveQuery } from 'dexie-react-hooks';
+import { createState, useHookstate } from '@hookstate/core';
+import { Persistence } from '@hookstate/persistence';
+import dayjs from 'dayjs';
+import classNames from 'classnames';
+import Input from './components/Input';
+import { TrashIcon } from '@heroicons/react/outline';
+import { PauseIcon, PlayIcon } from '@heroicons/react/solid';
 
-interface User {
-  name: string;
-  email: string;
-  profilePicture: string;
-  oauthToken: string;
+enum Page {
+  Songs = 'Songs',
+  Albums = 'Albums',
 }
+
+enum Comparison {
+  is = 'is',
+  isNot = 'is not',
+  includes = 'includes',
+  doesNotInclude = 'does not include',
+}
+
+enum Attribute {
+  Title = 'Title',
+  Artist = 'Artist',
+  Album = 'Album',
+  Genre = 'Genre',
+}
+
+interface Rule {
+  attribute: Attribute;
+  comparison: Comparison;
+  value: string;
+}
+
+interface Album {
+  name: string;
+  followAllRules: boolean;
+  rules: Rule[];
+}
+
+const globalLastUpdated = createState('Never');
+globalLastUpdated.attach(Persistence('lastUpdated'));
+const globalAlbums = createState<Album[]>([]);
+globalAlbums.attach(Persistence('albums'));
+
+const audio = new Audio();
 
 const App: React.FC = () => {
   const [loading, setLoading] = useState(true);
-  const [user, setUser] = useState<User | null>(null);
+  const [loadingNewSongs, setLoadingNewSongs] = useState(false);
+  const [user, setUser] = useState<{
+    name: string;
+    email: string;
+    profilePicture: string;
+    oauthToken: string;
+  } | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [page, setPage] = useState(Page.Songs);
+  const lastUpdated = useHookstate(globalLastUpdated);
+  const albums = useHookstate(globalAlbums);
+  const [currentAlbum, setCurrentAlbum] = useState('');
+  const [currentSong, setCurrentSong] = useState<Song | null>(null);
+  const [playing, setPlaying] = useState(false);
+  const [, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
 
-  const songs = useLiveQuery(() =>
-    db.songs.filter((song) => song.title.includes(searchQuery)).toArray(),
+  const allSongs = useLiveQuery(() => db.songs.toArray(), []);
+
+  const songs = useLiveQuery(
+    () =>
+      db.songs
+        .filter((song) =>
+          song.title.toLowerCase().includes(searchQuery.toLowerCase()),
+        )
+        .toArray(),
+    [searchQuery],
   );
+
+  const songMap = useMemo(
+    () =>
+      allSongs
+        ? Object.fromEntries(allSongs.map((song) => [song.id, song]))
+        : {},
+    [allSongs],
+  );
+
+  const [songToCover, setSongToCover] = useState<{
+    [id: string]: { cover: string; lastUpdatedUtc: number };
+  }>({});
+
+  useEffect(() => {
+    const newSongToCover = { ...songToCover };
+    allSongs?.forEach((song) => {
+      if (
+        songToCover[song.id] &&
+        song.lastEditedUtc > songToCover[song.id].lastUpdatedUtc
+      ) {
+        delete songToCover[song.id];
+      }
+      if (!songToCover[song.id] && song.cover) {
+        newSongToCover[song.id] = {
+          cover: URL.createObjectURL(song.cover),
+          lastUpdatedUtc: song.lastEditedUtc,
+        };
+      }
+    });
+    Object.keys(songToCover).forEach((id) => {
+      if (songMap && !songMap[id]) {
+        URL.revokeObjectURL(songToCover[id].cover);
+        delete newSongToCover[id];
+      }
+    });
+    setSongToCover(newSongToCover);
+    audio.onended = () => playSong();
+  }, [allSongs]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleAuthChange = (signedIn: boolean) => {
     if (signedIn) {
@@ -70,51 +169,49 @@ const App: React.FC = () => {
 
   const handlePickerChange = async (data: google.picker.DocumentObject[]) => {
     try {
-      (
-        await Promise.all(
-          data.map(
-            async (song) =>
-              new Promise(async (resolve, reject) => {
-                try {
-                  const result = {
-                    ...song,
-                    blob: await fetch(
-                      `https://www.googleapis.com/drive/v3/files/${song.id}?alt=media`,
-                      {
-                        headers: {
-                          Authorization: `Bearer ${user?.oauthToken}`,
-                        },
+      setLoadingNewSongs(true);
+      await Promise.all(
+        data.map(
+          async (song) =>
+            new Promise<void>(async (resolve, reject) => {
+              try {
+                const duplicate = await db.songs.get(song.id);
+                if (duplicate && duplicate.lastEditedUtc >= song.lastEditedUtc)
+                  resolve();
+                else {
+                  const blob = await fetch(
+                    `https://www.googleapis.com/drive/v3/files/${song.id}?alt=media`,
+                    {
+                      headers: {
+                        Authorization: `Bearer ${user?.oauthToken}`,
                       },
-                    ).then((res) => res.blob()),
-                  };
+                    },
+                  ).then((res) => res.blob());
                   const metaData = parse(
-                    new Uint8Array(await result.blob.arrayBuffer()),
+                    new Uint8Array(await blob.arrayBuffer()),
                   );
                   if (!metaData) throw new Error('Invalid metadata');
-                  resolve({
-                    ...result,
-                    metaData,
-                  });
-                } catch (e) {
-                  reject(e);
+                  if (duplicate) {
+                    db.songs.update(
+                      song.id,
+                      formatSongToStorage({ ...song, blob, metaData }),
+                    );
+                  } else {
+                    db.songs.add(
+                      formatSongToStorage({ ...song, blob, metaData }),
+                    );
+                  }
                 }
-              }),
-          ),
-        )
-      ).forEach(async (untypedSong) => {
-        const song: google.picker.DocumentObject & {
-          blob: Blob;
-          metaData: ITags;
-        } = untypedSong as any;
-        const duplicate = await db.songs.get(song.id);
-        if (duplicate) {
-          if (duplicate.lastEditedUtc < song.lastEditedUtc) {
-            db.songs.update(song.id, formatSongToStorage(song));
-          }
-        } else {
-          db.songs.add(formatSongToStorage(song));
-        }
-      });
+                resolve();
+              } catch (e) {
+                reject(e);
+              }
+            }),
+        ),
+      );
+      notify({ description: 'Songs uploaded and updated' });
+      setLoadingNewSongs(false);
+      lastUpdated.set(dayjs().format('MMM D, YYYY'));
     } catch (e) {
       error(e);
     }
@@ -131,11 +228,76 @@ const App: React.FC = () => {
       .setOAuthToken(user?.oauthToken as string)
       .addView(view)
       .setDeveloperKey(process.env.REACT_APP_API_KEY as string)
+      .hideTitleBar()
       .setCallback(
         (data) => data.action === 'picked' && handlePickerChange(data.docs),
       )
       .build()
       .setVisible(true);
+  };
+
+  const filterSongs = ({ rules, followAllRules }: Album) =>
+    allSongs?.filter((song) => {
+      for (let i = 0; i < rules.length; i++) {
+        const rule = rules[i];
+        const attribute = song[
+          rule.attribute.toLowerCase() as keyof Song
+        ] as string;
+        if (
+          !followAllRules &&
+          ((rule.comparison === Comparison.is && attribute === rule.value) ||
+            (rule.comparison === Comparison.isNot &&
+              attribute !== rule.value) ||
+            (rule.comparison === Comparison.includes &&
+              attribute.includes(rule.value)) ||
+            (rule.comparison === Comparison.doesNotInclude &&
+              !attribute.includes(rule.value)))
+        ) {
+          return true;
+        }
+        if (
+          followAllRules &&
+          ((rule.comparison === Comparison.is && attribute !== rule.value) ||
+            (rule.comparison === Comparison.isNot &&
+              attribute === rule.value) ||
+            (rule.comparison === Comparison.includes &&
+              !attribute.includes(rule.value)) ||
+            (rule.comparison === Comparison.doesNotInclude &&
+              attribute.includes(rule.value)))
+        ) {
+          return false;
+        }
+      }
+      if (followAllRules) return true;
+      else return false;
+    });
+
+  const playSong = (song?: Song) => {
+    URL.revokeObjectURL(audio.src);
+    const filteredSongs = filterSongs(
+      albums.value.find((album) => album.name === currentAlbum) || {
+        followAllRules: true,
+        rules: [],
+        name: '',
+      },
+    );
+    if (!filteredSongs?.length) {
+      error('There are currently no songs to play');
+      return;
+    }
+    if (!song) {
+      let newSong =
+        filteredSongs[Math.floor(Math.random() * filteredSongs.length)];
+      while (newSong.id === currentSong?.id) {
+        newSong =
+          filteredSongs[Math.floor(Math.random() * filteredSongs.length)];
+      }
+      song = newSong;
+    }
+    setCurrentSong(song);
+    audio.src = URL.createObjectURL(song.blob);
+    setPlaying(true);
+    audio.play();
   };
 
   useEffect(() => {
@@ -155,15 +317,22 @@ const App: React.FC = () => {
         setLoading(false);
       }),
     );
-  }, []);
+    audio.ontimeupdate = () => setCurrentTime(audio.currentTime);
+    audio.ondurationchange = () => setDuration(audio.duration);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (playing) audio.play();
+    else audio.pause();
+  }, [playing]);
 
   return (
-    <div className='absolute inset-0 p-5 grid content-start grid-cols-2 sm:grid-cols-8 sm:gap-4 gap-y-4'>
+    <div className='absolute inset-0 p-4 sm:grid flex flex-col sm:grid-cols-8 sm:gap-4 gap-y-2 sm:grid-rows-1'>
       <Notification />
       {loading ? (
         <>
-          <div className='col-span-3' />
-          <div className='col-span-2 flex items-center row-span-6'>
+          <div className='hidden sm:inline col-span-3' />
+          <div className='col-span-2 flex items-center'>
             <div className='bg-white rounded-lg w-full flex justify-center items-center gap-4 p-4 text-gray-700'>
               <Spinner size='h-8' />
               <p className='text-3xl'>Loading...</p>
@@ -172,8 +341,8 @@ const App: React.FC = () => {
         </>
       ) : user ? (
         <>
-          <div className='col-span-2 flex flex-col gap-4'>
-            <div className='bg-white rounded-lg flex justify-between p-4'>
+          <div className='col-span-2 flex flex-col gap-2 sm:gap-4'>
+            <div className='bg-white rounded-lg flex justify-between p-3'>
               <div className='flex flex-col items-start'>
                 <span className='font-medium text-lg'>{user.name}</span>
                 <span className='text-gray-500 text-xs'>{user.email}</span>
@@ -191,22 +360,246 @@ const App: React.FC = () => {
               />
             </div>
             <button
-              className='hover:bg-gray-100 bg-white w-full p-3 rounded-lg text-xl transition-colors'
+              className={classNames(
+                loadingNewSongs
+                  ? 'bg-gray-100 cursor-not-allowed'
+                  : 'hover:bg-gray-100 bg-white',
+                'w-full p-2 rounded-lg text-lg transition-colors relative',
+              )}
               onClick={createPicker}
+              disabled={loadingNewSongs}
             >
+              {loadingNewSongs && <Spinner size='absolute h-7 inset-4' />}
               Upload or Update a Song
+              <p className='text-xs text-gray-500'>
+                Last Updated: {lastUpdated.value}
+              </p>
             </button>
+            <span className='relative z-0 flex shadow-sm rounded-md'>
+              {Object.values(Page).map((pageName, idx, { length }) => (
+                <button
+                  onClick={() => setPage(pageName)}
+                  key={pageName}
+                  className={classNames(
+                    {
+                      'rounded-l-md': idx === 0,
+                      'rounded-r-md': idx === length - 1,
+                      '-ml-px': idx !== 0,
+                    },
+                    page === pageName
+                      ? 'bg-gray-100 cursor-not-allowed ring-1 ring-green-500 border-green-500 outline-none z-10'
+                      : 'hover:bg-gray-50 focus:z-10 focus:outline-none focus:ring-1 focus:ring-green-500 focus:border-green-500',
+                    'relative w-full inline-flex justify-center px-4 py-2 border border-gray-300 bg-white text-sm text-gray-700',
+                  )}
+                >
+                  {pageName}
+                </button>
+              ))}
+            </span>
+            {(() => {
+              switch (page) {
+                case Page.Songs: {
+                  return (
+                    <Input
+                      value={searchQuery}
+                      onChange={setSearchQuery}
+                      placeholder='Search'
+                    />
+                  );
+                }
+                case Page.Albums: {
+                  return (
+                    <button className='bg-green-800 text-white hover:bg-green-700 p-2 rounded-lg border border-green-900'>
+                      Create a New Album
+                    </button>
+                  );
+                }
+              }
+            })()}
+            <div className='bg-gradient-to-br from-blue-800 to-cyan-800 p-5 bg-fixed rounded-lg flex sm:flex-col gap-4'>
+              <img
+                alt={currentSong?.title}
+                className='bg-white h-20 w-20 sm:w-auto sm:h-48 rounded-lg sm:mx-auto'
+                src={
+                  currentSong?.cover
+                    ? songToCover[currentSong.id].cover
+                    : emptyMusic
+                }
+              />
+              <div className='flex flex-col sm:items-center text-white justify-between w-full'>
+                <p className='text-xl'>
+                  {currentSong?.title || 'No Song Playing'}
+                </p>
+                <p className='hidden sm:inline'>
+                  {!currentSong && '-'}
+                  {currentSong?.artist}
+                  {currentSong?.artist && currentSong?.album && ': '}
+                  {currentSong?.album}
+                </p>
+                <div className='-ml-1 sm:ml-0 flex my-1 items-center'>
+                  {playing ? (
+                    <PauseIcon
+                      className='h-8 cursor-pointer'
+                      onClick={() => setPlaying(false)}
+                    />
+                  ) : (
+                    <PlayIcon
+                      className={classNames(
+                        'h-8',
+                        currentSong ? 'cursor-pointer' : 'cursor-not-allowed',
+                      )}
+                      onClick={() => currentSong && setPlaying(true)}
+                    />
+                  )}
+                  <svg
+                    viewBox='0 0 512 512'
+                    className='h-8 rotate-180 cursor-pointer mr-1'
+                    onClick={() => playSong()}
+                  >
+                    <path
+                      fill='currentColor'
+                      d='M48 256c0 114.69 93.31 208 208 208s208-93.31 208-208S370.69 48 256 48 48 141.31 48 256zm128-64a16 16 0 0132 0v53l111.68-67.46a10.78 10.78 0 0116.32 9.33v138.26a10.78 10.78 0 01-16.32 9.31L208 267v53a16 16 0 01-32 0z'
+                    />
+                  </svg>
+                  {audio.currentTime
+                    ? `${Math.floor(audio.currentTime / 60)}:${Math.floor(
+                        audio.currentTime % 60,
+                      ).toLocaleString('en-US', { minimumIntegerDigits: 2 })}/`
+                    : null}
+                  {duration
+                    ? `${Math.floor(duration / 60)}:${Math.floor(
+                        duration % 60,
+                      ).toLocaleString('en-US', { minimumIntegerDigits: 2 })}`
+                    : null}
+                </div>
+                <input
+                  type='range'
+                  className='w-full'
+                  value={audio.currentTime}
+                  onChange={(e) => (audio.currentTime = +e.target.value)}
+                  min={0}
+                  max={isFinite(audio.duration) ? audio.duration : 1}
+                  step={1e-9}
+                />
+              </div>
+            </div>
           </div>
-          <div className='col-span-6 overflow-hidden'>
-            {JSON.stringify(songs)}
+          <div className='h-full col-span-6 overflow-auto shadow ring-1 ring-black ring-opacity-5 rounded-lg bg-white'>
+            <table className='min-w-full divide-y divide-gray-300'>
+              <thead className='bg-gray-50 relative'>
+                <tr>
+                  <th
+                    scope='col'
+                    className='pl-4 pr-4 sm:pr-0 py-3.5 text-left text-sm font-semibold text-gray-900'
+                  >
+                    Icon
+                  </th>
+                  <th
+                    scope='col'
+                    className='text-left text-sm font-semibold text-gray-900'
+                  >
+                    Title
+                  </th>
+                  <th
+                    scope='col'
+                    className='text-left text-sm font-semibold text-gray-900'
+                  >
+                    Album
+                  </th>
+                  <th
+                    scope='col'
+                    className='text-left text-sm font-semibold text-gray-900'
+                  >
+                    Artist
+                  </th>
+                  <th
+                    scope='col'
+                    className='text-left text-sm font-semibold text-gray-900'
+                  >
+                    Genre
+                  </th>
+                  <th
+                    scope='col'
+                    className='text-left text-sm font-semibold text-gray-900'
+                  >
+                    Year
+                  </th>
+                  <th
+                    scope='col'
+                    className='text-left text-sm font-semibold text-gray-900'
+                  >
+                    Last Edited
+                  </th>
+                  <th scope='col'></th>
+                </tr>
+              </thead>
+              <tbody>
+                {songs?.length ? (
+                  songs?.map((song, idx) => (
+                    <tr
+                      key={song.id}
+                      className={classNames({ 'bg-gray-50': idx % 2 === 0 })}
+                    >
+                      <td
+                        className='whitespace-nowrap pl-4 pr-2 py-3 text-sm text-gray-500 cursor-pointer'
+                        onClick={() => playSong(song)}
+                      >
+                        <img
+                          alt='cover'
+                          className='w-8 sm:w-16 -mr-6 rounded-md'
+                          src={
+                            song?.cover
+                              ? songToCover[song.id]?.cover
+                              : emptyMusic
+                          }
+                        />
+                      </td>
+                      <td className='whitespace-nowrap py-3 text-sm font-medium text-gray-900 pr-2'>
+                        {song.title}
+                      </td>
+                      <td className='whitespace-nowrap text-sm text-gray-500 pr-2'>
+                        {song.album || '-'}
+                      </td>
+                      <td className='whitespace-nowrap text-sm text-gray-500 pr-2'>
+                        {song.artist || '-'}
+                      </td>
+                      <td className='whitespace-nowrap text-sm text-gray-500 pr-2'>
+                        {song.genre || '-'}
+                      </td>
+                      <td className='whitespace-nowrap text-sm text-gray-500 pr-2'>
+                        {song.year || '-'}
+                      </td>
+                      <td className='whitespace-nowrap text-sm text-gray-500 pr-2'>
+                        {dayjs(song.lastEditedUtc).format('MMM DD, YYYY')}
+                      </td>
+                      <td
+                        className='whitespace-nowrap text-sm text-gray-500 pr-2 cursor-pointer'
+                        onClick={() => db.songs.delete(song.id)}
+                      >
+                        <TrashIcon className='text-red-800 w-6' />
+                      </td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td
+                      colSpan={8}
+                      className='text-center text-3xl py-48 text-gray-500'
+                    >
+                      No Songs Found
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
           </div>
         </>
       ) : (
         <>
-          <div className='col-span-3' />
-          <div className='col-span-2 flex items-center row-span-6'>
+          <div className='hidden sm:inline col-span-3' />
+          <div className='col-span-2 flex items-center'>
             <button
-              className='bg-gray-100 hover:bg-white transition-colors rounded-lg w-full flex justify-center gap-4 p-4 text-gray-700'
+              className='bg-gray-100 hover:bg-white rounded-lg w-full flex justify-center items-center gap-4 p-4 text-gray-700'
               onClick={() => gapi.auth2?.getAuthInstance().signIn()}
             >
               <img className='w-10 h-10' alt='Google Logo' src={googleLogo} />
