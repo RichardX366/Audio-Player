@@ -367,18 +367,21 @@ const App: React.FC = () => {
   useEffect(() => {
     gapi.load('picker', () =>
       gapi.load('client:auth2', async () => {
-        await gapi.client.init({
-          apiKey: process.env.REACT_APP_API_KEY,
-          clientId: process.env.REACT_APP_CLIENT_ID,
-          discoveryDocs: [
-            'https://www.googleapis.com/discovery/v1/apis/drive/v3/rest',
-          ],
-          scope: 'https://www.googleapis.com/auth/drive.readonly',
-        });
-        const auth = gapi.auth2.getAuthInstance();
-        auth.isSignedIn.listen(handleAuthChange);
-        handleAuthChange(auth.isSignedIn.get());
-        setLoading(false);
+        try {
+          await gapi.client.init({
+            apiKey: process.env.REACT_APP_API_KEY,
+            clientId: process.env.REACT_APP_CLIENT_ID,
+            discoveryDocs: [
+              'https://www.googleapis.com/discovery/v1/apis/drive/v3/rest',
+            ],
+            scope: 'https://www.googleapis.com/auth/drive.readonly',
+          });
+          const auth = gapi.auth2.getAuthInstance();
+          auth.isSignedIn.listen(handleAuthChange);
+          handleAuthChange(auth.isSignedIn.get());
+        } finally {
+          setLoading(false);
+        }
       }),
     );
     audio.ontimeupdate = () => setCurrentTime(audio.currentTime);
