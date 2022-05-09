@@ -63,7 +63,6 @@ const emptyRule: Rule = {
 };
 
 const App: React.FC = () => {
-  const [loading, setLoading] = useState(true);
   const [loadingNewSongs, setLoadingNewSongs] = useState(false);
   const [user, setUser] = useState<{
     name: string;
@@ -367,21 +366,17 @@ const App: React.FC = () => {
   useEffect(() => {
     gapi.load('picker', () =>
       gapi.load('client:auth2', async () => {
-        try {
-          await gapi.client.init({
-            apiKey: process.env.REACT_APP_API_KEY,
-            clientId: process.env.REACT_APP_CLIENT_ID,
-            discoveryDocs: [
-              'https://www.googleapis.com/discovery/v1/apis/drive/v3/rest',
-            ],
-            scope: 'https://www.googleapis.com/auth/drive.readonly',
-          });
-          const auth = gapi.auth2.getAuthInstance();
-          auth.isSignedIn.listen(handleAuthChange);
-          handleAuthChange(auth.isSignedIn.get());
-        } finally {
-          setLoading(false);
-        }
+        await gapi.client.init({
+          apiKey: process.env.REACT_APP_API_KEY,
+          clientId: process.env.REACT_APP_CLIENT_ID,
+          discoveryDocs: [
+            'https://www.googleapis.com/discovery/v1/apis/drive/v3/rest',
+          ],
+          scope: 'https://www.googleapis.com/auth/drive.readonly',
+        });
+        const auth = gapi.auth2.getAuthInstance();
+        auth.isSignedIn.listen(handleAuthChange);
+        handleAuthChange(auth.isSignedIn.get());
       }),
     );
     audio.ontimeupdate = () => setCurrentTime(audio.currentTime);
@@ -396,385 +391,367 @@ const App: React.FC = () => {
   return (
     <div className='absolute inset-0 p-4 sm:grid flex flex-col sm:grid-cols-8 sm:gap-4 gap-y-2 sm:grid-rows-1'>
       <Notification />
-      {loading ? (
-        <>
-          <div className='hidden sm:inline col-span-3' />
-          <div className='col-span-2 flex items-center h-full'>
-            <div className='bg-white rounded-lg w-full flex justify-center items-center gap-4 p-4 text-gray-700'>
-              <Spinner size='h-8' />
-              <p className='text-3xl'>Loading...</p>
-            </div>
-          </div>
-        </>
-      ) : (
-        <>
-          <div className='col-span-2 flex flex-col gap-2 sm:gap-4'>
-            {user ? (
-              <div className='bg-white rounded-lg flex justify-between p-3'>
-                <div className='flex flex-col items-start'>
-                  <span className='font-medium text-lg'>{user.name}</span>
-                  <span className='text-gray-500 text-xs'>{user.email}</span>
-                  <button
-                    onClick={gapi.auth2?.getAuthInstance().signOut}
-                    className='text-sm text-red-800 hover:text-red-700 font-medium transition-colors'
-                  >
-                    Sign Out
-                  </button>
-                </div>
-                <img
-                  src={user.profilePicture}
-                  alt='pfp'
-                  className='w-16 border border-gray-300 rounded-full'
-                />
-              </div>
-            ) : (
+      <div className='col-span-2 flex flex-col gap-2 sm:gap-4'>
+        {user ? (
+          <div className='bg-white rounded-lg flex justify-between p-3'>
+            <div className='flex flex-col items-start'>
+              <span className='font-medium text-lg'>{user.name}</span>
+              <span className='text-gray-500 text-xs'>{user.email}</span>
               <button
-                className='bg-white hover:bg-gray-100 transition-colors rounded-lg w-full flex justify-center items-center gap-4 p-4 text-gray-700'
-                onClick={() => gapi.auth2?.getAuthInstance().signIn()}
+                onClick={gapi.auth2?.getAuthInstance().signOut}
+                className='text-sm text-red-800 hover:text-red-700 font-medium transition-colors'
               >
-                <img className='w-10 h-10' alt='Google Logo' src={googleLogo} />
-                <p className='text-3xl'>Sign in with Google</p>
+                Sign Out
               </button>
-            )}
-            <button
-              className={classNames(
-                loadingNewSongs || !user
-                  ? 'bg-gray-100 cursor-not-allowed'
-                  : 'hover:bg-gray-100 bg-white',
-                'w-full p-2 rounded-lg text-lg transition-colors relative',
-              )}
-              onClick={createPicker}
-              disabled={loadingNewSongs || !user}
-            >
-              {loadingNewSongs && <Spinner size='absolute h-7 inset-4' />}
-              Upload or Update a Song
-              <p className='text-xs text-gray-500'>
-                Last Updated: {lastUpdated.value}
-              </p>
-            </button>
-            <span className='relative z-0 flex shadow-sm rounded-md'>
-              {Object.values(Page).map((pageName, idx, { length }) => (
-                <button
-                  onClick={() => setPage(pageName)}
-                  key={pageName}
-                  className={classNames(
-                    {
-                      'rounded-l-md': idx === 0,
-                      'rounded-r-md': idx === length - 1,
-                      '-ml-px': idx !== 0,
-                    },
-                    page === pageName
-                      ? 'bg-gray-100 cursor-not-allowed ring-1 ring-green-500 border-green-500 outline-none z-10'
-                      : 'hover:bg-gray-50 focus:z-10 focus:outline-none focus:ring-1 focus:ring-green-500 focus:border-green-500',
-                    'relative w-full inline-flex justify-center px-4 py-2 border border-gray-300 bg-white text-sm text-gray-700',
-                  )}
-                >
-                  {pageName}
-                </button>
-              ))}
-            </span>
-            {(() => {
-              switch (page) {
-                case Page.Songs: {
-                  return (
-                    <Input
-                      value={searchQuery}
-                      onChange={setSearchQuery}
-                      placeholder='Search'
-                    />
-                  );
-                }
-                case Page.Albums: {
-                  return (
-                    <button
-                      className='bg-green-800 text-white hover:bg-green-700 p-2 rounded-lg border border-green-900'
-                      onClick={() => {
-                        createAlbumForm.set({
-                          name: '',
-                          followAllRules: false,
-                          rules: [
-                            {
-                              attribute: Attribute.Album,
-                              comparison: Comparison.is,
-                              data: '',
-                            },
-                          ],
-                        });
-                        setShowCreateAlbum(true);
-                      }}
-                    >
-                      Create a New Album
-                    </button>
-                  );
-                }
-              }
-            })()}
-            <div className='bg-gradient-to-br from-blue-800 to-cyan-800 p-5 bg-fixed rounded-lg flex sm:flex-col gap-4'>
-              <img
-                alt={currentSong?.title}
-                className='bg-white h-20 w-20 sm:w-auto sm:h-48 rounded-lg sm:mx-auto'
-                src={
-                  currentSong?.cover
-                    ? songToCover[currentSong.id].cover
-                    : emptyMusic
-                }
-              />
-              <div className='flex flex-col sm:items-center text-white justify-between w-full'>
-                <p className='text-xl truncate w-56 sm:w-full sm:text-center'>
-                  {currentSong?.title || 'No Song Playing'}
-                </p>
-                <p className='hidden sm:inline'>
-                  {(!currentSong ||
-                    (!currentSong?.artist && !currentSong?.album)) &&
-                    '-'}
-                  {currentSong?.artist}
-                  {currentSong?.artist && currentSong?.album && ': '}
-                  {currentSong?.album}
-                </p>
-                <div className='-ml-1 sm:ml-0 flex my-1 items-center'>
-                  {playing ? (
-                    <PauseIcon
-                      className='h-8 cursor-pointer'
-                      onClick={() => setPlaying(false)}
-                    />
-                  ) : (
-                    <PlayIcon
-                      className={classNames(
-                        'h-8',
-                        currentSong ? 'cursor-pointer' : 'cursor-not-allowed',
-                      )}
-                      onClick={() => currentSong && setPlaying(true)}
-                    />
-                  )}
-                  <svg
-                    viewBox='0 0 512 512'
-                    className='h-8 rotate-180 cursor-pointer mr-1'
-                    onClick={() => playSong()}
-                  >
-                    <path
-                      fill='currentColor'
-                      d='M48 256c0 114.69 93.31 208 208 208s208-93.31 208-208S370.69 48 256 48 48 141.31 48 256zm128-64a16 16 0 0132 0v53l111.68-67.46a10.78 10.78 0 0116.32 9.33v138.26a10.78 10.78 0 01-16.32 9.31L208 267v53a16 16 0 01-32 0z'
-                    />
-                  </svg>
-                  {audio.currentTime
-                    ? `${Math.floor(audio.currentTime / 60)}:${Math.floor(
-                        audio.currentTime % 60,
-                      ).toLocaleString('en-US', { minimumIntegerDigits: 2 })}/`
-                    : null}
-                  {duration
-                    ? `${Math.floor(duration / 60)}:${Math.floor(
-                        duration % 60,
-                      ).toLocaleString('en-US', { minimumIntegerDigits: 2 })}`
-                    : null}
-                </div>
-                <input
-                  type='range'
-                  className='w-full'
-                  value={audio.currentTime}
-                  onChange={(e) => (audio.currentTime = +e.target.value)}
-                  min={0}
-                  max={isFinite(audio.duration) ? audio.duration : 1}
-                  step={1e-9}
-                />
-              </div>
             </div>
+            <img
+              src={user.profilePicture}
+              alt='pfp'
+              className='w-16 border border-gray-300 rounded-full'
+            />
           </div>
-          {(() => {
-            switch (page) {
-              case Page.Songs: {
-                return (
-                  <div className='h-full col-span-6 overflow-auto shadow ring-1 ring-black ring-opacity-5 rounded-lg bg-white'>
-                    <table className='min-w-full divide-y divide-gray-300'>
-                      <thead className='bg-gray-50 relative'>
-                        <tr>
-                          <th
-                            scope='col'
-                            className='pl-4 pr-4 sm:pr-0 py-3.5 text-left text-sm font-semibold text-gray-900'
-                          >
-                            Icon
-                          </th>
-                          <th
-                            scope='col'
-                            className='text-left text-sm font-semibold text-gray-900'
-                          >
-                            Title
-                          </th>
-                          <th
-                            scope='col'
-                            className='text-left text-sm font-semibold text-gray-900'
-                          >
-                            Album
-                          </th>
-                          <th
-                            scope='col'
-                            className='text-left text-sm font-semibold text-gray-900'
-                          >
-                            Artist
-                          </th>
-                          <th
-                            scope='col'
-                            className='text-left text-sm font-semibold text-gray-900'
-                          >
-                            Genre
-                          </th>
-                          <th
-                            scope='col'
-                            className='text-left text-sm font-semibold text-gray-900'
-                          >
-                            Year
-                          </th>
-                          <th
-                            scope='col'
-                            className='text-left text-sm font-semibold text-gray-900'
-                          >
-                            Last Edited
-                          </th>
-                          <th scope='col'></th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {songs?.length ? (
-                          songs?.map((song, idx) => (
-                            <tr
-                              key={song.id}
-                              className={classNames({
-                                'bg-gray-50': idx % 2 === 0,
-                              })}
-                            >
-                              <td
-                                className='whitespace-nowrap pl-4 pr-2 py-3 text-sm text-gray-500 cursor-pointer'
-                                onClick={() => {
-                                  currentAlbum.set('');
-                                  playSong(song);
-                                }}
-                              >
-                                <img
-                                  alt='cover'
-                                  className='w-8 sm:w-16 -mr-6 rounded-md'
-                                  src={
-                                    song?.cover
-                                      ? songToCover[song.id]?.cover
-                                      : emptyMusic
-                                  }
-                                />
-                              </td>
-                              <td className='whitespace-nowrap py-3 text-sm font-medium text-gray-900 pr-2'>
-                                {song.title}
-                              </td>
-                              <td className='whitespace-nowrap text-sm text-gray-500 pr-2'>
-                                {song.album || '-'}
-                              </td>
-                              <td className='whitespace-nowrap text-sm text-gray-500 pr-2'>
-                                {song.artist || '-'}
-                              </td>
-                              <td className='whitespace-nowrap text-sm text-gray-500 pr-2'>
-                                {song.genre || '-'}
-                              </td>
-                              <td className='whitespace-nowrap text-sm text-gray-500 pr-2'>
-                                {song.year || '-'}
-                              </td>
-                              <td className='whitespace-nowrap text-sm text-gray-500 pr-2'>
-                                {dayjs(song.lastEditedUtc).format(
-                                  'MMM DD, YYYY',
-                                )}
-                              </td>
-                              <td
-                                className='whitespace-nowrap text-sm text-gray-500 pr-2 cursor-pointer'
-                                onClick={() => db.songs.delete(song.id)}
-                              >
-                                <TrashIcon className='text-red-800 w-6' />
-                              </td>
-                            </tr>
-                          ))
-                        ) : (
-                          <tr>
-                            <td
-                              colSpan={8}
-                              className='text-center text-3xl sm:pt-64 pt-28 text-gray-500'
-                            >
-                              No Songs Found
-                            </td>
-                          </tr>
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                );
-              }
-              case Page.Albums: {
-                return (
-                  <div className='h-full col-span-6 overflow-auto shadow ring-1 ring-black ring-opacity-5 rounded-lg bg-white'>
-                    <table className='min-w-full divide-y divide-gray-300'>
-                      <thead className='bg-gray-50 relative'>
-                        <tr>
-                          <th
-                            scope='col'
-                            className='pl-4 pr-4 sm:pr-0 py-3.5 text-left text-sm font-semibold text-gray-900'
-                          >
-                            Title
-                          </th>
-                          <th scope='col'></th>
-                          <th scope='col'></th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {albums.value.length ? (
-                          albums.value.map((album, idx) => (
-                            <tr
-                              key={album.name}
-                              className={classNames({
-                                'bg-gray-50': idx % 2 === 0,
-                              })}
-                            >
-                              <td
-                                className='whitespace-nowrap py-3 text-sm font-medium text-gray-900 pl-4 pr-2 w-full cursor-pointer'
-                                onClick={() => {
-                                  currentAlbum.set(album.name);
-                                  playSong();
-                                }}
-                              >
-                                {album.name}
-                              </td>
-                              <td
-                                className='whitespace-nowrap text-sm text-gray-500 pr-2 cursor-pointer'
-                                onClick={() => albums.merge({ [idx]: none })}
-                              >
-                                <TrashIcon className='text-red-800 w-6' />
-                              </td>
-                              <td
-                                className='whitespace-nowrap text-sm text-gray-500 pr-2 cursor-pointer'
-                                onClick={() => {
-                                  editAlbumForm.set(
-                                    JSON.parse(
-                                      JSON.stringify({ ...album, idx }),
-                                    ),
-                                  );
-                                  setShowEditAlbum(true);
-                                }}
-                              >
-                                <PencilIcon className='text-blue-800 w-6' />
-                              </td>
-                            </tr>
-                          ))
-                        ) : (
-                          <tr>
-                            <td
-                              colSpan={8}
-                              className='text-center text-3xl sm:pt-64 pt-28 text-gray-500'
-                            >
-                              No Albums Found
-                            </td>
-                          </tr>
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                );
-              }
+        ) : (
+          <button
+            className='bg-white hover:bg-gray-100 transition-colors rounded-lg w-full flex justify-center items-center gap-4 p-4 text-gray-700'
+            onClick={() => gapi.auth2?.getAuthInstance().signIn()}
+          >
+            <img className='w-10 h-10' alt='Google Logo' src={googleLogo} />
+            <p className='text-3xl'>Sign in with Google</p>
+          </button>
+        )}
+        <button
+          className={classNames(
+            loadingNewSongs || !user
+              ? 'bg-gray-100 cursor-not-allowed'
+              : 'hover:bg-gray-100 bg-white',
+            'w-full p-2 rounded-lg text-lg transition-colors relative',
+          )}
+          onClick={createPicker}
+          disabled={loadingNewSongs || !user}
+        >
+          {loadingNewSongs && <Spinner size='absolute h-7 inset-4' />}
+          Upload or Update a Song
+          <p className='text-xs text-gray-500'>
+            Last Updated: {lastUpdated.value}
+          </p>
+        </button>
+        <span className='relative z-0 flex shadow-sm rounded-md'>
+          {Object.values(Page).map((pageName, idx, { length }) => (
+            <button
+              onClick={() => setPage(pageName)}
+              key={pageName}
+              className={classNames(
+                {
+                  'rounded-l-md': idx === 0,
+                  'rounded-r-md': idx === length - 1,
+                  '-ml-px': idx !== 0,
+                },
+                page === pageName
+                  ? 'bg-gray-100 cursor-not-allowed ring-1 ring-green-500 border-green-500 outline-none z-10'
+                  : 'hover:bg-gray-50 focus:z-10 focus:outline-none focus:ring-1 focus:ring-green-500 focus:border-green-500',
+                'relative w-full inline-flex justify-center px-4 py-2 border border-gray-300 bg-white text-sm text-gray-700',
+              )}
+            >
+              {pageName}
+            </button>
+          ))}
+        </span>
+        {(() => {
+          switch (page) {
+            case Page.Songs: {
+              return (
+                <Input
+                  value={searchQuery}
+                  onChange={setSearchQuery}
+                  placeholder='Search'
+                />
+              );
             }
-          })()}
-        </>
-      )}
+            case Page.Albums: {
+              return (
+                <button
+                  className='bg-green-800 text-white hover:bg-green-700 p-2 rounded-lg border border-green-900'
+                  onClick={() => {
+                    createAlbumForm.set({
+                      name: '',
+                      followAllRules: false,
+                      rules: [
+                        {
+                          attribute: Attribute.Album,
+                          comparison: Comparison.is,
+                          data: '',
+                        },
+                      ],
+                    });
+                    setShowCreateAlbum(true);
+                  }}
+                >
+                  Create a New Album
+                </button>
+              );
+            }
+          }
+        })()}
+        <div className='bg-gradient-to-br from-blue-800 to-cyan-800 p-5 bg-fixed rounded-lg flex sm:flex-col gap-4'>
+          <img
+            alt={currentSong?.title}
+            className='bg-white h-20 w-20 sm:w-auto sm:h-48 rounded-lg sm:mx-auto'
+            src={
+              currentSong?.cover
+                ? songToCover[currentSong.id].cover
+                : emptyMusic
+            }
+          />
+          <div className='flex flex-col sm:items-center text-white justify-between w-full'>
+            <p className='text-xl truncate w-56 sm:w-full sm:text-center'>
+              {currentSong?.title || 'No Song Playing'}
+            </p>
+            <p className='hidden sm:inline'>
+              {(!currentSong ||
+                (!currentSong?.artist && !currentSong?.album)) &&
+                '-'}
+              {currentSong?.artist}
+              {currentSong?.artist && currentSong?.album && ': '}
+              {currentSong?.album}
+            </p>
+            <div className='-ml-1 sm:ml-0 flex my-1 items-center'>
+              {playing ? (
+                <PauseIcon
+                  className='h-8 cursor-pointer'
+                  onClick={() => setPlaying(false)}
+                />
+              ) : (
+                <PlayIcon
+                  className={classNames(
+                    'h-8',
+                    currentSong ? 'cursor-pointer' : 'cursor-not-allowed',
+                  )}
+                  onClick={() => currentSong && setPlaying(true)}
+                />
+              )}
+              <svg
+                viewBox='0 0 512 512'
+                className='h-8 rotate-180 cursor-pointer mr-1'
+                onClick={() => playSong()}
+              >
+                <path
+                  fill='currentColor'
+                  d='M48 256c0 114.69 93.31 208 208 208s208-93.31 208-208S370.69 48 256 48 48 141.31 48 256zm128-64a16 16 0 0132 0v53l111.68-67.46a10.78 10.78 0 0116.32 9.33v138.26a10.78 10.78 0 01-16.32 9.31L208 267v53a16 16 0 01-32 0z'
+                />
+              </svg>
+              {audio.currentTime
+                ? `${Math.floor(audio.currentTime / 60)}:${Math.floor(
+                    audio.currentTime % 60,
+                  ).toLocaleString('en-US', { minimumIntegerDigits: 2 })}/`
+                : null}
+              {duration
+                ? `${Math.floor(duration / 60)}:${Math.floor(
+                    duration % 60,
+                  ).toLocaleString('en-US', { minimumIntegerDigits: 2 })}`
+                : null}
+            </div>
+            <input
+              type='range'
+              className='w-full'
+              value={audio.currentTime}
+              onChange={(e) => (audio.currentTime = +e.target.value)}
+              min={0}
+              max={isFinite(audio.duration) ? audio.duration : 1}
+              step={1e-9}
+            />
+          </div>
+        </div>
+      </div>
+      {(() => {
+        switch (page) {
+          case Page.Songs: {
+            return (
+              <div className='h-full col-span-6 overflow-auto shadow ring-1 ring-black ring-opacity-5 rounded-lg bg-white'>
+                <table className='min-w-full divide-y divide-gray-300'>
+                  <thead className='bg-gray-50 relative'>
+                    <tr>
+                      <th
+                        scope='col'
+                        className='pl-4 pr-4 sm:pr-0 py-3.5 text-left text-sm font-semibold text-gray-900'
+                      >
+                        Icon
+                      </th>
+                      <th
+                        scope='col'
+                        className='text-left text-sm font-semibold text-gray-900'
+                      >
+                        Title
+                      </th>
+                      <th
+                        scope='col'
+                        className='text-left text-sm font-semibold text-gray-900'
+                      >
+                        Album
+                      </th>
+                      <th
+                        scope='col'
+                        className='text-left text-sm font-semibold text-gray-900'
+                      >
+                        Artist
+                      </th>
+                      <th
+                        scope='col'
+                        className='text-left text-sm font-semibold text-gray-900'
+                      >
+                        Genre
+                      </th>
+                      <th
+                        scope='col'
+                        className='text-left text-sm font-semibold text-gray-900'
+                      >
+                        Year
+                      </th>
+                      <th
+                        scope='col'
+                        className='text-left text-sm font-semibold text-gray-900'
+                      >
+                        Last Edited
+                      </th>
+                      <th scope='col'></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {songs?.length ? (
+                      songs?.map((song, idx) => (
+                        <tr
+                          key={song.id}
+                          className={classNames({
+                            'bg-gray-50': idx % 2 === 0,
+                          })}
+                        >
+                          <td
+                            className='whitespace-nowrap pl-4 pr-2 py-3 text-sm text-gray-500 cursor-pointer'
+                            onClick={() => {
+                              currentAlbum.set('');
+                              playSong(song);
+                            }}
+                          >
+                            <img
+                              alt='cover'
+                              className='w-8 sm:w-16 -mr-6 rounded-md'
+                              src={
+                                song?.cover
+                                  ? songToCover[song.id]?.cover
+                                  : emptyMusic
+                              }
+                            />
+                          </td>
+                          <td className='whitespace-nowrap py-3 text-sm font-medium text-gray-900 pr-2'>
+                            {song.title}
+                          </td>
+                          <td className='whitespace-nowrap text-sm text-gray-500 pr-2'>
+                            {song.album || '-'}
+                          </td>
+                          <td className='whitespace-nowrap text-sm text-gray-500 pr-2'>
+                            {song.artist || '-'}
+                          </td>
+                          <td className='whitespace-nowrap text-sm text-gray-500 pr-2'>
+                            {song.genre || '-'}
+                          </td>
+                          <td className='whitespace-nowrap text-sm text-gray-500 pr-2'>
+                            {song.year || '-'}
+                          </td>
+                          <td className='whitespace-nowrap text-sm text-gray-500 pr-2'>
+                            {dayjs(song.lastEditedUtc).format('MMM DD, YYYY')}
+                          </td>
+                          <td
+                            className='whitespace-nowrap text-sm text-gray-500 pr-2 cursor-pointer'
+                            onClick={() => db.songs.delete(song.id)}
+                          >
+                            <TrashIcon className='text-red-800 w-6' />
+                          </td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td
+                          colSpan={8}
+                          className='text-center text-3xl sm:pt-64 pt-28 text-gray-500'
+                        >
+                          No Songs Found
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            );
+          }
+          case Page.Albums: {
+            return (
+              <div className='h-full col-span-6 overflow-auto shadow ring-1 ring-black ring-opacity-5 rounded-lg bg-white'>
+                <table className='min-w-full divide-y divide-gray-300'>
+                  <thead className='bg-gray-50 relative'>
+                    <tr>
+                      <th
+                        scope='col'
+                        className='pl-4 pr-4 sm:pr-0 py-3.5 text-left text-sm font-semibold text-gray-900'
+                      >
+                        Title
+                      </th>
+                      <th scope='col'></th>
+                      <th scope='col'></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {albums.value.length ? (
+                      albums.value.map((album, idx) => (
+                        <tr
+                          key={album.name}
+                          className={classNames({
+                            'bg-gray-50': idx % 2 === 0,
+                          })}
+                        >
+                          <td
+                            className='whitespace-nowrap py-3 text-sm font-medium text-gray-900 pl-4 pr-2 w-full cursor-pointer'
+                            onClick={() => {
+                              currentAlbum.set(album.name);
+                              playSong();
+                            }}
+                          >
+                            {album.name}
+                          </td>
+                          <td
+                            className='whitespace-nowrap text-sm text-gray-500 pr-2 cursor-pointer'
+                            onClick={() => albums.merge({ [idx]: none })}
+                          >
+                            <TrashIcon className='text-red-800 w-6' />
+                          </td>
+                          <td
+                            className='whitespace-nowrap text-sm text-gray-500 pr-2 cursor-pointer'
+                            onClick={() => {
+                              editAlbumForm.set(
+                                JSON.parse(JSON.stringify({ ...album, idx })),
+                              );
+                              setShowEditAlbum(true);
+                            }}
+                          >
+                            <PencilIcon className='text-blue-800 w-6' />
+                          </td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td
+                          colSpan={8}
+                          className='text-center text-3xl sm:pt-64 pt-28 text-gray-500'
+                        >
+                          No Albums Found
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            );
+          }
+        }
+      })()}
       <Modal
         onSubmit={() => {
           if (
