@@ -3,18 +3,20 @@ import { gapi } from 'gapi-script';
 import googleLogo from './google.png';
 import emptyMusic from './emptyMusic.jpg';
 import Spinner from './components/Spinner';
-import Notification, { error, notify } from './components/Notification';
+import Notification, { error, notify, warn } from './components/Notification';
 import { ITags } from 'id3-parser/lib/interface';
 import { parse } from 'id3-parser';
 import { db, Song } from './db';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { createState, useHookstate } from '@hookstate/core';
+import { createState, none, useHookstate } from '@hookstate/core';
 import { Persistence } from '@hookstate/persistence';
 import dayjs from 'dayjs';
 import classNames from 'classnames';
 import Input from './components/Input';
-import { TrashIcon } from '@heroicons/react/outline';
+import { PencilIcon, TrashIcon } from '@heroicons/react/outline';
 import { PauseIcon, PlayIcon } from '@heroicons/react/solid';
+import Modal from './components/Modal';
+import SingleDropdown from './components/SingleDropdown';
 
 enum Page {
   Songs = 'Songs',
@@ -38,7 +40,7 @@ enum Attribute {
 interface Rule {
   attribute: Attribute;
   comparison: Comparison;
-  value: string;
+  data: string;
 }
 
 interface Album {
@@ -54,6 +56,12 @@ globalAlbums.attach(Persistence('albums'));
 
 const audio = new Audio();
 
+const emptyRule: Rule = {
+  attribute: Attribute.Album,
+  comparison: Comparison.is,
+  data: '',
+};
+
 const App: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [loadingNewSongs, setLoadingNewSongs] = useState(false);
@@ -67,11 +75,24 @@ const App: React.FC = () => {
   const [page, setPage] = useState(Page.Songs);
   const lastUpdated = useHookstate(globalLastUpdated);
   const albums = useHookstate(globalAlbums);
-  const [currentAlbum, setCurrentAlbum] = useState('');
+  const currentAlbum = useHookstate('');
   const [currentSong, setCurrentSong] = useState<Song | null>(null);
   const [playing, setPlaying] = useState(false);
   const [, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
+  const [showCreateAlbum, setShowCreateAlbum] = useState(false);
+  const [showEditAlbum, setShowEditAlbum] = useState(false);
+  const createAlbumForm = useHookstate({
+    name: '',
+    followAllRules: false,
+    rules: [emptyRule],
+  });
+  const editAlbumForm = useHookstate<Album & { idx: number }>({
+    name: '',
+    followAllRules: false,
+    rules: [],
+    idx: 0,
+  });
 
   const allSongs = useLiveQuery(() => db.songs.toArray(), []);
 
@@ -81,7 +102,7 @@ const App: React.FC = () => {
         .filter((song) =>
           song.title.toLowerCase().includes(searchQuery.toLowerCase()),
         )
-        .toArray(),
+        .sortBy('album'),
     [searchQuery],
   );
 
@@ -167,47 +188,72 @@ const App: React.FC = () => {
     };
   };
 
+  const handleAddSong = async (song: google.picker.DocumentObject) => {
+    try {
+      const duplicate = await db.songs.get(song.id);
+      if (duplicate && duplicate.lastEditedUtc >= song.lastEditedUtc) {
+        return;
+      } else {
+        const blob = await fetch(
+          `https://www.googleapis.com/drive/v3/files/${song.id}?alt=media`,
+          {
+            headers: {
+              Authorization: `Bearer ${user?.oauthToken}`,
+            },
+          },
+        ).then((res) => res.blob());
+        const metaData = parse(new Uint8Array(await blob.arrayBuffer()));
+        if (!metaData) throw new Error('Invalid metadata');
+        if (duplicate) {
+          db.songs.update(
+            song.id,
+            formatSongToStorage({ ...song, blob, metaData }),
+          );
+        } else {
+          db.songs.add(formatSongToStorage({ ...song, blob, metaData }));
+        }
+      }
+      return;
+    } catch (e) {
+      throw e;
+    }
+  };
+
+  const handleAddFolder = async (folder: google.picker.DocumentObject) => {
+    const list = await gapi.client.drive.files.list({
+      pageSize: 1000,
+      q: `'${folder.id}' in parents and (mimeType contains 'audio/' or mimeType = 'application/vnd.google-apps.folder')`,
+      fields: 'files(id, modifiedTime, name, mimeType)',
+    });
+    await Promise.all(
+      list.result.files?.map(async (songOrFolder) => {
+        const doc = {
+          id: songOrFolder.id as string,
+          name: songOrFolder.name as string,
+          lastEditedUtc: new Date(
+            songOrFolder.modifiedTime as string,
+          ).getTime(),
+        } as google.picker.DocumentObject;
+        if (songOrFolder.mimeType === 'application/vnd.google-apps.folder') {
+          await handleAddFolder(doc);
+        } else {
+          await handleAddSong(doc);
+        }
+      }) || [],
+    );
+  };
+
   const handlePickerChange = async (data: google.picker.DocumentObject[]) => {
     try {
       setLoadingNewSongs(true);
       await Promise.all(
-        data.map(
-          async (song) =>
-            new Promise<void>(async (resolve, reject) => {
-              try {
-                const duplicate = await db.songs.get(song.id);
-                if (duplicate && duplicate.lastEditedUtc >= song.lastEditedUtc)
-                  resolve();
-                else {
-                  const blob = await fetch(
-                    `https://www.googleapis.com/drive/v3/files/${song.id}?alt=media`,
-                    {
-                      headers: {
-                        Authorization: `Bearer ${user?.oauthToken}`,
-                      },
-                    },
-                  ).then((res) => res.blob());
-                  const metaData = parse(
-                    new Uint8Array(await blob.arrayBuffer()),
-                  );
-                  if (!metaData) throw new Error('Invalid metadata');
-                  if (duplicate) {
-                    db.songs.update(
-                      song.id,
-                      formatSongToStorage({ ...song, blob, metaData }),
-                    );
-                  } else {
-                    db.songs.add(
-                      formatSongToStorage({ ...song, blob, metaData }),
-                    );
-                  }
-                }
-                resolve();
-              } catch (e) {
-                reject(e);
-              }
-            }),
-        ),
+        data.map(async (songOrFolder) => {
+          if (songOrFolder.mimeType === 'application/vnd.google-apps.folder') {
+            handleAddFolder(songOrFolder);
+          } else {
+            await handleAddSong(songOrFolder);
+          }
+        }),
       );
       notify({ description: 'Songs uploaded and updated' });
       setLoadingNewSongs(false);
@@ -218,19 +264,38 @@ const App: React.FC = () => {
   };
 
   const createPicker = () => {
-    const view = new google.picker.DocsView(google.picker.ViewId.DOCS);
-    view.setMimeTypes(
+    const myDrive = new google.picker.DocsView(google.picker.ViewId.DOCS);
+    myDrive.setMimeTypes(
       'audio/wav,audio/mpeg,audio/mp4,audio/aac,audio/aacp,audio/ogg,audio/webm,audio/flac',
     );
+    myDrive.setIncludeFolders(true);
+    myDrive.setSelectFolderEnabled(true);
+    myDrive.setParent('root');
+    const sharedDrives = new google.picker.DocsView(google.picker.ViewId.DOCS);
+    sharedDrives.setMimeTypes(
+      'audio/wav,audio/mpeg,audio/mp4,audio/aac,audio/aacp,audio/ogg,audio/webm,audio/flac',
+    );
+    sharedDrives.setIncludeFolders(true);
+    sharedDrives.setSelectFolderEnabled(true);
+    sharedDrives.setEnableDrives(true);
     new google.picker.PickerBuilder()
       .enableFeature(google.picker.Feature.MULTISELECT_ENABLED)
+      .enableFeature(google.picker.Feature.SUPPORT_DRIVES)
       .setAppId(process.env.REACT_APP_PROJECT_ID as string)
       .setOAuthToken(user?.oauthToken as string)
-      .addView(view)
+      .addView(myDrive)
+      .addView(sharedDrives)
       .setDeveloperKey(process.env.REACT_APP_API_KEY as string)
       .hideTitleBar()
-      .setCallback(
-        (data) => data.action === 'picked' && handlePickerChange(data.docs),
+      .setCallback((data) =>
+        data.action === 'picked'
+          ? handlePickerChange(data.docs)
+          : data.action === 'cancel' &&
+            warn({
+              title: 'Note:',
+              description:
+                'If you want to use a synced folder or file, search up the name of the computer or containing folder and it will appear',
+            }),
       )
       .build()
       .setVisible(true);
@@ -241,29 +306,28 @@ const App: React.FC = () => {
       for (let i = 0; i < rules.length; i++) {
         const rule = rules[i];
         const attribute = song[
-          rule.attribute.toLowerCase() as keyof Song
-        ] as string;
+          rule.attribute.toLowerCase() as 'title'
+        ]?.replaceAll('\u0000', '');
+        if (!attribute) return false;
         if (
           !followAllRules &&
-          ((rule.comparison === Comparison.is && attribute === rule.value) ||
-            (rule.comparison === Comparison.isNot &&
-              attribute !== rule.value) ||
+          ((rule.comparison === Comparison.is && attribute === rule.data) ||
+            (rule.comparison === Comparison.isNot && attribute !== rule.data) ||
             (rule.comparison === Comparison.includes &&
-              attribute.includes(rule.value)) ||
+              attribute.includes(rule.data)) ||
             (rule.comparison === Comparison.doesNotInclude &&
-              !attribute.includes(rule.value)))
+              !attribute.includes(rule.data)))
         ) {
           return true;
         }
         if (
           followAllRules &&
-          ((rule.comparison === Comparison.is && attribute !== rule.value) ||
-            (rule.comparison === Comparison.isNot &&
-              attribute === rule.value) ||
+          ((rule.comparison === Comparison.is && attribute !== rule.data) ||
+            (rule.comparison === Comparison.isNot && attribute === rule.data) ||
             (rule.comparison === Comparison.includes &&
-              !attribute.includes(rule.value)) ||
+              !attribute.includes(rule.data)) ||
             (rule.comparison === Comparison.doesNotInclude &&
-              attribute.includes(rule.value)))
+              attribute.includes(rule.data)))
         ) {
           return false;
         }
@@ -275,7 +339,7 @@ const App: React.FC = () => {
   const playSong = (song?: Song) => {
     URL.revokeObjectURL(audio.src);
     const filteredSongs = filterSongs(
-      albums.value.find((album) => album.name === currentAlbum) || {
+      albums.value.find((album) => album.name === currentAlbum.value) || {
         followAllRules: true,
         rules: [],
         name: '',
@@ -288,7 +352,7 @@ const App: React.FC = () => {
     if (!song) {
       let newSong =
         filteredSongs[Math.floor(Math.random() * filteredSongs.length)];
-      while (newSong.id === currentSong?.id) {
+      while (newSong.id === currentSong?.id && filteredSongs.length > 1) {
         newSong =
           filteredSongs[Math.floor(Math.random() * filteredSongs.length)];
       }
@@ -332,42 +396,52 @@ const App: React.FC = () => {
       {loading ? (
         <>
           <div className='hidden sm:inline col-span-3' />
-          <div className='col-span-2 flex items-center'>
+          <div className='col-span-2 flex items-center h-full'>
             <div className='bg-white rounded-lg w-full flex justify-center items-center gap-4 p-4 text-gray-700'>
               <Spinner size='h-8' />
               <p className='text-3xl'>Loading...</p>
             </div>
           </div>
         </>
-      ) : user ? (
+      ) : (
         <>
           <div className='col-span-2 flex flex-col gap-2 sm:gap-4'>
-            <div className='bg-white rounded-lg flex justify-between p-3'>
-              <div className='flex flex-col items-start'>
-                <span className='font-medium text-lg'>{user.name}</span>
-                <span className='text-gray-500 text-xs'>{user.email}</span>
-                <button
-                  onClick={gapi.auth2?.getAuthInstance().signOut}
-                  className='text-sm text-red-800 hover:text-red-700 font-medium transition-colors'
-                >
-                  Sign Out
-                </button>
+            {user ? (
+              <div className='bg-white rounded-lg flex justify-between p-3'>
+                <div className='flex flex-col items-start'>
+                  <span className='font-medium text-lg'>{user.name}</span>
+                  <span className='text-gray-500 text-xs'>{user.email}</span>
+                  <button
+                    onClick={gapi.auth2?.getAuthInstance().signOut}
+                    className='text-sm text-red-800 hover:text-red-700 font-medium transition-colors'
+                  >
+                    Sign Out
+                  </button>
+                </div>
+                <img
+                  src={user.profilePicture}
+                  alt='pfp'
+                  className='w-16 border border-gray-300 rounded-full'
+                />
               </div>
-              <img
-                src={user.profilePicture}
-                alt='pfp'
-                className='w-16 border border-gray-300 rounded-full'
-              />
-            </div>
+            ) : (
+              <button
+                className='bg-white hover:bg-gray-100 transition-colors rounded-lg w-full flex justify-center items-center gap-4 p-4 text-gray-700'
+                onClick={() => gapi.auth2?.getAuthInstance().signIn()}
+              >
+                <img className='w-10 h-10' alt='Google Logo' src={googleLogo} />
+                <p className='text-3xl'>Sign in with Google</p>
+              </button>
+            )}
             <button
               className={classNames(
-                loadingNewSongs
+                loadingNewSongs || !user
                   ? 'bg-gray-100 cursor-not-allowed'
                   : 'hover:bg-gray-100 bg-white',
                 'w-full p-2 rounded-lg text-lg transition-colors relative',
               )}
               onClick={createPicker}
-              disabled={loadingNewSongs}
+              disabled={loadingNewSongs || !user}
             >
               {loadingNewSongs && <Spinner size='absolute h-7 inset-4' />}
               Upload or Update a Song
@@ -409,7 +483,23 @@ const App: React.FC = () => {
                 }
                 case Page.Albums: {
                   return (
-                    <button className='bg-green-800 text-white hover:bg-green-700 p-2 rounded-lg border border-green-900'>
+                    <button
+                      className='bg-green-800 text-white hover:bg-green-700 p-2 rounded-lg border border-green-900'
+                      onClick={() => {
+                        createAlbumForm.set({
+                          name: '',
+                          followAllRules: false,
+                          rules: [
+                            {
+                              attribute: Attribute.Album,
+                              comparison: Comparison.is,
+                              data: '',
+                            },
+                          ],
+                        });
+                        setShowCreateAlbum(true);
+                      }}
+                    >
                       Create a New Album
                     </button>
                   );
@@ -427,11 +517,13 @@ const App: React.FC = () => {
                 }
               />
               <div className='flex flex-col sm:items-center text-white justify-between w-full'>
-                <p className='text-xl'>
+                <p className='text-xl truncate w-56 sm:w-full sm:text-center'>
                   {currentSong?.title || 'No Song Playing'}
                 </p>
                 <p className='hidden sm:inline'>
-                  {!currentSong && '-'}
+                  {(!currentSong ||
+                    (!currentSong?.artist && !currentSong?.album)) &&
+                    '-'}
                   {currentSong?.artist}
                   {currentSong?.artist && currentSong?.album && ': '}
                   {currentSong?.album}
@@ -484,130 +576,371 @@ const App: React.FC = () => {
               </div>
             </div>
           </div>
-          <div className='h-full col-span-6 overflow-auto shadow ring-1 ring-black ring-opacity-5 rounded-lg bg-white'>
-            <table className='min-w-full divide-y divide-gray-300'>
-              <thead className='bg-gray-50 relative'>
-                <tr>
-                  <th
-                    scope='col'
-                    className='pl-4 pr-4 sm:pr-0 py-3.5 text-left text-sm font-semibold text-gray-900'
-                  >
-                    Icon
-                  </th>
-                  <th
-                    scope='col'
-                    className='text-left text-sm font-semibold text-gray-900'
-                  >
-                    Title
-                  </th>
-                  <th
-                    scope='col'
-                    className='text-left text-sm font-semibold text-gray-900'
-                  >
-                    Album
-                  </th>
-                  <th
-                    scope='col'
-                    className='text-left text-sm font-semibold text-gray-900'
-                  >
-                    Artist
-                  </th>
-                  <th
-                    scope='col'
-                    className='text-left text-sm font-semibold text-gray-900'
-                  >
-                    Genre
-                  </th>
-                  <th
-                    scope='col'
-                    className='text-left text-sm font-semibold text-gray-900'
-                  >
-                    Year
-                  </th>
-                  <th
-                    scope='col'
-                    className='text-left text-sm font-semibold text-gray-900'
-                  >
-                    Last Edited
-                  </th>
-                  <th scope='col'></th>
-                </tr>
-              </thead>
-              <tbody>
-                {songs?.length ? (
-                  songs?.map((song, idx) => (
-                    <tr
-                      key={song.id}
-                      className={classNames({ 'bg-gray-50': idx % 2 === 0 })}
-                    >
-                      <td
-                        className='whitespace-nowrap pl-4 pr-2 py-3 text-sm text-gray-500 cursor-pointer'
-                        onClick={() => playSong(song)}
-                      >
-                        <img
-                          alt='cover'
-                          className='w-8 sm:w-16 -mr-6 rounded-md'
-                          src={
-                            song?.cover
-                              ? songToCover[song.id]?.cover
-                              : emptyMusic
-                          }
-                        />
-                      </td>
-                      <td className='whitespace-nowrap py-3 text-sm font-medium text-gray-900 pr-2'>
-                        {song.title}
-                      </td>
-                      <td className='whitespace-nowrap text-sm text-gray-500 pr-2'>
-                        {song.album || '-'}
-                      </td>
-                      <td className='whitespace-nowrap text-sm text-gray-500 pr-2'>
-                        {song.artist || '-'}
-                      </td>
-                      <td className='whitespace-nowrap text-sm text-gray-500 pr-2'>
-                        {song.genre || '-'}
-                      </td>
-                      <td className='whitespace-nowrap text-sm text-gray-500 pr-2'>
-                        {song.year || '-'}
-                      </td>
-                      <td className='whitespace-nowrap text-sm text-gray-500 pr-2'>
-                        {dayjs(song.lastEditedUtc).format('MMM DD, YYYY')}
-                      </td>
-                      <td
-                        className='whitespace-nowrap text-sm text-gray-500 pr-2 cursor-pointer'
-                        onClick={() => db.songs.delete(song.id)}
-                      >
-                        <TrashIcon className='text-red-800 w-6' />
-                      </td>
-                    </tr>
-                  ))
-                ) : (
-                  <tr>
-                    <td
-                      colSpan={8}
-                      className='text-center text-3xl py-48 text-gray-500'
-                    >
-                      No Songs Found
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </>
-      ) : (
-        <>
-          <div className='hidden sm:inline col-span-3' />
-          <div className='col-span-2 flex items-center'>
-            <button
-              className='bg-gray-100 hover:bg-white rounded-lg w-full flex justify-center items-center gap-4 p-4 text-gray-700'
-              onClick={() => gapi.auth2?.getAuthInstance().signIn()}
-            >
-              <img className='w-10 h-10' alt='Google Logo' src={googleLogo} />
-              <p className='text-3xl'>Sign in with Google</p>
-            </button>
-          </div>
+          {(() => {
+            switch (page) {
+              case Page.Songs: {
+                return (
+                  <div className='h-full col-span-6 overflow-auto shadow ring-1 ring-black ring-opacity-5 rounded-lg bg-white'>
+                    <table className='min-w-full divide-y divide-gray-300'>
+                      <thead className='bg-gray-50 relative'>
+                        <tr>
+                          <th
+                            scope='col'
+                            className='pl-4 pr-4 sm:pr-0 py-3.5 text-left text-sm font-semibold text-gray-900'
+                          >
+                            Icon
+                          </th>
+                          <th
+                            scope='col'
+                            className='text-left text-sm font-semibold text-gray-900'
+                          >
+                            Title
+                          </th>
+                          <th
+                            scope='col'
+                            className='text-left text-sm font-semibold text-gray-900'
+                          >
+                            Album
+                          </th>
+                          <th
+                            scope='col'
+                            className='text-left text-sm font-semibold text-gray-900'
+                          >
+                            Artist
+                          </th>
+                          <th
+                            scope='col'
+                            className='text-left text-sm font-semibold text-gray-900'
+                          >
+                            Genre
+                          </th>
+                          <th
+                            scope='col'
+                            className='text-left text-sm font-semibold text-gray-900'
+                          >
+                            Year
+                          </th>
+                          <th
+                            scope='col'
+                            className='text-left text-sm font-semibold text-gray-900'
+                          >
+                            Last Edited
+                          </th>
+                          <th scope='col'></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {songs?.length ? (
+                          songs?.map((song, idx) => (
+                            <tr
+                              key={song.id}
+                              className={classNames({
+                                'bg-gray-50': idx % 2 === 0,
+                              })}
+                            >
+                              <td
+                                className='whitespace-nowrap pl-4 pr-2 py-3 text-sm text-gray-500 cursor-pointer'
+                                onClick={() => {
+                                  currentAlbum.set('');
+                                  playSong(song);
+                                }}
+                              >
+                                <img
+                                  alt='cover'
+                                  className='w-8 sm:w-16 -mr-6 rounded-md'
+                                  src={
+                                    song?.cover
+                                      ? songToCover[song.id]?.cover
+                                      : emptyMusic
+                                  }
+                                />
+                              </td>
+                              <td className='whitespace-nowrap py-3 text-sm font-medium text-gray-900 pr-2'>
+                                {song.title}
+                              </td>
+                              <td className='whitespace-nowrap text-sm text-gray-500 pr-2'>
+                                {song.album || '-'}
+                              </td>
+                              <td className='whitespace-nowrap text-sm text-gray-500 pr-2'>
+                                {song.artist || '-'}
+                              </td>
+                              <td className='whitespace-nowrap text-sm text-gray-500 pr-2'>
+                                {song.genre || '-'}
+                              </td>
+                              <td className='whitespace-nowrap text-sm text-gray-500 pr-2'>
+                                {song.year || '-'}
+                              </td>
+                              <td className='whitespace-nowrap text-sm text-gray-500 pr-2'>
+                                {dayjs(song.lastEditedUtc).format(
+                                  'MMM DD, YYYY',
+                                )}
+                              </td>
+                              <td
+                                className='whitespace-nowrap text-sm text-gray-500 pr-2 cursor-pointer'
+                                onClick={() => db.songs.delete(song.id)}
+                              >
+                                <TrashIcon className='text-red-800 w-6' />
+                              </td>
+                            </tr>
+                          ))
+                        ) : (
+                          <tr>
+                            <td
+                              colSpan={8}
+                              className='text-center text-3xl sm:pt-64 pt-28 text-gray-500'
+                            >
+                              No Songs Found
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                );
+              }
+              case Page.Albums: {
+                return (
+                  <div className='h-full col-span-6 overflow-auto shadow ring-1 ring-black ring-opacity-5 rounded-lg bg-white'>
+                    <table className='min-w-full divide-y divide-gray-300'>
+                      <thead className='bg-gray-50 relative'>
+                        <tr>
+                          <th
+                            scope='col'
+                            className='pl-4 pr-4 sm:pr-0 py-3.5 text-left text-sm font-semibold text-gray-900'
+                          >
+                            Title
+                          </th>
+                          <th scope='col'></th>
+                          <th scope='col'></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {albums.value.length ? (
+                          albums.value.map((album, idx) => (
+                            <tr
+                              key={album.name}
+                              className={classNames({
+                                'bg-gray-50': idx % 2 === 0,
+                              })}
+                            >
+                              <td
+                                className='whitespace-nowrap py-3 text-sm font-medium text-gray-900 pl-4 pr-2 w-full cursor-pointer'
+                                onClick={() => {
+                                  currentAlbum.set(album.name);
+                                  playSong();
+                                }}
+                              >
+                                {album.name}
+                              </td>
+                              <td
+                                className='whitespace-nowrap text-sm text-gray-500 pr-2 cursor-pointer'
+                                onClick={() => albums.merge({ [idx]: none })}
+                              >
+                                <TrashIcon className='text-red-800 w-6' />
+                              </td>
+                              <td
+                                className='whitespace-nowrap text-sm text-gray-500 pr-2 cursor-pointer'
+                                onClick={() => {
+                                  editAlbumForm.set(
+                                    JSON.parse(
+                                      JSON.stringify({ ...album, idx }),
+                                    ),
+                                  );
+                                  setShowEditAlbum(true);
+                                }}
+                              >
+                                <PencilIcon className='text-blue-800 w-6' />
+                              </td>
+                            </tr>
+                          ))
+                        ) : (
+                          <tr>
+                            <td
+                              colSpan={8}
+                              className='text-center text-3xl sm:pt-64 pt-28 text-gray-500'
+                            >
+                              No Albums Found
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                );
+              }
+            }
+          })()}
         </>
       )}
+      <Modal
+        onSubmit={() => {
+          if (
+            albums.value.find(
+              (album) => album.name === createAlbumForm.name.value,
+            )
+          ) {
+            return error('Album already exists');
+          }
+          albums.merge([{ ...createAlbumForm.value }]);
+          setShowCreateAlbum(false);
+          notify({ description: 'Album created!' });
+        }}
+        title='Create a New Album'
+        show={showCreateAlbum}
+        setShow={setShowCreateAlbum}
+      >
+        <Input
+          onChange={createAlbumForm.name.set}
+          value={createAlbumForm.name.value}
+          label='Name'
+        />
+        <div className='relative flex items-start mt-2'>
+          <div className='flex items-center h-5'>
+            <input
+              id='allRules'
+              name='allRules'
+              type='checkbox'
+              className='focus:ring-sky-500 h-4 w-4 text-sky-600 border-gray-300 rounded'
+              checked={createAlbumForm.followAllRules.value}
+              onChange={(e) =>
+                createAlbumForm.followAllRules.set(e.target.checked)
+              }
+            />
+          </div>
+          <div className='pl-3 text-sm select-none'>
+            <label htmlFor='allRules' className='text-gray-700'>
+              Album must follow all rules
+            </label>
+          </div>
+        </div>
+        <div className='grid divide-y divide-gray-300 mt-1'>
+          {createAlbumForm.rules.map((rule, i) => (
+            <div className='flex' key={i}>
+              <div className='grid sm:grid-cols-3 gap-2 mb-2'>
+                <SingleDropdown
+                  label='Attribute'
+                  data={Object.values(Attribute).map((attribute) => ({
+                    id: attribute,
+                    title: attribute,
+                  }))}
+                  value={rule.attribute.value}
+                  onChange={rule.attribute.set as (v: string) => void}
+                />
+                <SingleDropdown
+                  label='Comparison'
+                  data={Object.values(Comparison).map((comparison) => ({
+                    id: comparison,
+                    title: comparison,
+                  }))}
+                  value={rule.comparison.value}
+                  onChange={rule.comparison.set as (v: string) => void}
+                />
+                <Input
+                  onChange={rule.data.set}
+                  value={rule.data.value}
+                  label='Value'
+                />
+              </div>
+              <TrashIcon
+                className='text-red-800 w-8 mt-4 ml-2 cursor-pointer'
+                onClick={() => createAlbumForm.rules.merge({ [i]: none })}
+              />
+            </div>
+          ))}
+        </div>
+        <button
+          onClick={() => createAlbumForm.rules.merge([emptyRule])}
+          className='text-blue-900'
+        >
+          New Rule +
+        </button>
+      </Modal>
+      <Modal
+        onSubmit={() => {
+          const foundIdx = albums.value.findIndex(
+            (album) => album.name === editAlbumForm.name.value,
+          );
+          if (foundIdx !== -1 && foundIdx !== editAlbumForm.idx.value) {
+            return error('Album already exists');
+          }
+          albums.merge({
+            [editAlbumForm.idx.value]: JSON.parse(
+              JSON.stringify(editAlbumForm.value),
+            ),
+          });
+          setShowEditAlbum(false);
+          notify({ description: 'Album updated!' });
+        }}
+        title='Edit an Album'
+        show={showEditAlbum}
+        setShow={setShowEditAlbum}
+      >
+        <Input
+          onChange={editAlbumForm.name.set}
+          value={editAlbumForm.name.value}
+          label='Name'
+        />
+        <div className='relative flex items-start mt-2'>
+          <div className='flex items-center h-5'>
+            <input
+              id='allRules'
+              name='allRules'
+              type='checkbox'
+              className='focus:ring-sky-500 h-4 w-4 text-sky-600 border-gray-300 rounded'
+              checked={editAlbumForm.followAllRules.value}
+              onChange={(e) =>
+                editAlbumForm.followAllRules.set(e.target.checked)
+              }
+            />
+          </div>
+          <div className='pl-3 text-sm select-none'>
+            <label htmlFor='allRules' className='text-gray-700'>
+              Album must follow all rules
+            </label>
+          </div>
+        </div>
+        <div className='grid divide-y divide-gray-300 mt-1'>
+          {editAlbumForm.rules.map((rule, i) => (
+            <div className='flex' key={i}>
+              <div className='grid sm:grid-cols-3 gap-2 mb-2'>
+                <SingleDropdown
+                  label='Attribute'
+                  data={Object.values(Attribute).map((attribute) => ({
+                    id: attribute,
+                    title: attribute,
+                  }))}
+                  value={rule.attribute.value}
+                  onChange={rule.attribute.set as (v: string) => void}
+                />
+                <SingleDropdown
+                  label='Comparison'
+                  data={Object.values(Comparison).map((comparison) => ({
+                    id: comparison,
+                    title: comparison,
+                  }))}
+                  value={rule.comparison.value}
+                  onChange={rule.comparison.set as (v: string) => void}
+                />
+                <Input
+                  onChange={rule.data.set}
+                  value={rule.data.value}
+                  label='Value'
+                />
+              </div>
+              <TrashIcon
+                className='text-red-800 w-8 mt-4 ml-2 cursor-pointer'
+                onClick={() => editAlbumForm.rules.merge({ [i]: none })}
+              />
+            </div>
+          ))}
+        </div>
+        <button
+          onClick={() => editAlbumForm.rules.merge([emptyRule])}
+          className='text-blue-900'
+        >
+          New Rule +
+        </button>
+      </Modal>
     </div>
   );
 };

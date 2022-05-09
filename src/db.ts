@@ -18,7 +18,7 @@ export class SongsDB extends Dexie {
   constructor() {
     super('songsDB');
     this.version(1).stores({
-      songs: '&id, title',
+      songs: '&id, title, album',
     });
   }
 }
