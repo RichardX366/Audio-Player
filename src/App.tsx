@@ -81,6 +81,7 @@ const App: React.FC = () => {
   const [duration, setDuration] = useState(0);
   const [showCreateAlbum, setShowCreateAlbum] = useState(false);
   const [showEditAlbum, setShowEditAlbum] = useState(false);
+  const [showEditSong, setShowEditSong] = useState(false);
   const createAlbumForm = useHookstate({
     name: '',
     followAllRules: false,
@@ -91,6 +92,13 @@ const App: React.FC = () => {
     followAllRules: false,
     rules: [],
     idx: 0,
+  });
+  const editSongForm = useHookstate({
+    id: '',
+    album: '',
+    title: '',
+    artist: '',
+    genre: '',
   });
 
   const allSongs = useLiveQuery(() => db.songs.toArray(), []);
@@ -173,12 +181,12 @@ const App: React.FC = () => {
     return {
       id: song.id,
       blob: song.blob,
-      title: song.metaData.title,
+      title: song.metaData.title.replaceAll('\u0000', ''),
       lastEditedUtc: song.lastEditedUtc,
-      artist: song.metaData.artist,
-      album: song.metaData.album,
-      genre: song.metaData.genre,
-      year: song.metaData.year,
+      artist: song.metaData.artist?.replaceAll('\u0000', ''),
+      album: song.metaData.album?.replaceAll('\u0000', ''),
+      genre: song.metaData.genre?.replaceAll('\u0000', ''),
+      year: song.metaData.year?.replaceAll('\u0000', ''),
       cover: song.metaData.image
         ? new Blob([(song.metaData.image.data as Uint8Array).buffer], {
             type: song.metaData.image.mime,
@@ -304,9 +312,7 @@ const App: React.FC = () => {
     allSongs?.filter((song) => {
       for (let i = 0; i < rules.length; i++) {
         const rule = rules[i];
-        const attribute = song[
-          rule.attribute.toLowerCase() as 'title'
-        ]?.replaceAll('\u0000', '');
+        const attribute = song[rule.attribute.toLowerCase() as 'title'];
         if (!attribute) return false;
         if (
           !followAllRules &&
@@ -498,7 +504,7 @@ const App: React.FC = () => {
             className='bg-white h-20 w-20 sm:w-auto sm:h-48 rounded-lg sm:mx-auto'
             src={
               currentSong?.cover
-                ? songToCover[currentSong.id].cover
+                ? songToCover[currentSong.id]?.cover
                 : emptyMusic
             }
           />
@@ -613,6 +619,7 @@ const App: React.FC = () => {
                         Last Edited
                       </th>
                       <th scope='col'></th>
+                      <th scope='col'></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -664,6 +671,21 @@ const App: React.FC = () => {
                             onClick={() => db.songs.delete(song.id)}
                           >
                             <TrashIcon className='text-red-800 w-6' />
+                          </td>
+                          <td
+                            className='whitespace-nowrap text-sm text-gray-500 pr-2 cursor-pointer'
+                            onClick={() => {
+                              editSongForm.set({
+                                id: song.id,
+                                title: song.title,
+                                album: song.album || '',
+                                artist: song.artist || '',
+                                genre: song.genre || '',
+                              });
+                              setShowEditSong(true);
+                            }}
+                          >
+                            <PencilIcon className='text-blue-800 w-6' />
                           </td>
                         </tr>
                       ))
@@ -920,6 +942,40 @@ const App: React.FC = () => {
         >
           New Rule +
         </button>
+      </Modal>
+      <Modal
+        setShow={setShowEditSong}
+        show={showEditSong}
+        title='Edit Song'
+        onSubmit={() => {
+          db.songs
+            .update(editSongForm.id.value, editSongForm.value)
+            .then(() => notify({ description: 'Song updated!' }));
+          setShowEditSong(false);
+        }}
+      >
+        <div className='grid gap-2'>
+          <Input
+            value={editSongForm.title.value}
+            onChange={editSongForm.title.set}
+            label='Title'
+          />
+          <Input
+            value={editSongForm.album.value}
+            onChange={editSongForm.album.set}
+            label='Album'
+          />
+          <Input
+            value={editSongForm.artist.value}
+            onChange={editSongForm.artist.set}
+            label='Artist'
+          />
+          <Input
+            value={editSongForm.genre.value}
+            onChange={editSongForm.genre.set}
+            label='Genre'
+          />
+        </div>
       </Modal>
     </div>
   );
