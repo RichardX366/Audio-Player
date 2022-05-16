@@ -528,11 +528,7 @@ const App: React.FC = () => {
                     'h-8',
                     currentSong ? 'cursor-pointer' : 'cursor-not-allowed',
                   )}
-                  onClick={
-                    currentSong
-                      ? () => audio.play().then(alert).catch(alert)
-                      : undefined
-                  }
+                  onClick={currentSong ? () => audio.play() : undefined}
                 />
               )}
               <svg
