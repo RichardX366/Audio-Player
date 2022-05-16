@@ -520,7 +520,7 @@ const App: React.FC = () => {
               {playing ? (
                 <PauseIcon
                   className='h-8 cursor-pointer'
-                  onClick={audio.pause}
+                  onClick={() => audio.pause()}
                 />
               ) : (
                 <PlayIcon
@@ -528,9 +528,7 @@ const App: React.FC = () => {
                     'h-8',
                     currentSong ? 'cursor-pointer' : 'cursor-not-allowed',
                   )}
-                  onClick={
-                    currentSong ? () => audio.play().catch(alert) : undefined
-                  }
+                  onClick={currentSong ? () => audio.play() : undefined}
                 />
               )}
               <svg
