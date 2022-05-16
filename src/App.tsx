@@ -847,7 +847,7 @@ const App: React.FC = () => {
           ))}
         </div>
         <button
-          onClick={() => createAlbumForm.rules.merge([emptyRule])}
+          onClick={() => createAlbumForm.rules.merge([{ ...emptyRule }])}
           className='text-blue-900'
         >
           New Rule +
@@ -933,7 +933,7 @@ const App: React.FC = () => {
           ))}
         </div>
         <button
-          onClick={() => editAlbumForm.rules.merge([emptyRule])}
+          onClick={() => editAlbumForm.rules.merge([{ ...emptyRule }])}
           className='text-blue-900'
         >
           New Rule +
