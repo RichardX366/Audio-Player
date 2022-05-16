@@ -365,7 +365,6 @@ const App: React.FC = () => {
     }
     setCurrentSong(song);
     audio.src = URL.createObjectURL(song.blob);
-    setPlaying(true);
     audio.play();
   };
 
@@ -390,11 +389,6 @@ const App: React.FC = () => {
     audio.onpause = () => setPlaying(false);
     audio.onplay = () => setPlaying(true);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  useEffect(() => {
-    if (playing) audio.play();
-    else audio.pause();
-  }, [playing]);
 
   return (
     <div className='absolute inset-0 p-4 sm:grid flex flex-col sm:grid-cols-8 sm:gap-4 gap-y-2 sm:grid-rows-1'>
@@ -526,7 +520,7 @@ const App: React.FC = () => {
               {playing ? (
                 <PauseIcon
                   className='h-8 cursor-pointer'
-                  onClick={() => setPlaying(false)}
+                  onClick={audio.pause}
                 />
               ) : (
                 <PlayIcon
@@ -534,7 +528,9 @@ const App: React.FC = () => {
                     'h-8',
                     currentSong ? 'cursor-pointer' : 'cursor-not-allowed',
                   )}
-                  onClick={() => currentSong && setPlaying(true)}
+                  onClick={
+                    currentSong ? () => audio.play().catch(alert) : undefined
+                  }
                 />
               )}
               <svg
