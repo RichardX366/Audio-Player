@@ -13,7 +13,12 @@ import { Persistence } from '@hookstate/persistence';
 import dayjs from 'dayjs';
 import classNames from 'classnames';
 import Input from './components/Input';
-import { PencilIcon, TrashIcon } from '@heroicons/react/outline';
+import {
+  ArrowsExpandIcon,
+  PencilIcon,
+  TrashIcon,
+  XIcon,
+} from '@heroicons/react/outline';
 import { PauseIcon, PlayIcon } from '@heroicons/react/solid';
 import Modal from './components/Modal';
 import SingleDropdown from './components/SingleDropdown';
@@ -82,6 +87,8 @@ const App: React.FC = () => {
   const [showCreateAlbum, setShowCreateAlbum] = useState(false);
   const [showEditAlbum, setShowEditAlbum] = useState(false);
   const [showEditSong, setShowEditSong] = useState(false);
+  const [songsPlayed, setSongsPlayed] = useState<string[]>([]);
+  const [fullscreenSong, setFullscreenSong] = useState(false);
   const createAlbumForm = useHookstate({
     name: '',
     followAllRules: false,
@@ -355,13 +362,22 @@ const App: React.FC = () => {
       return;
     }
     if (!song) {
-      let newSong =
-        filteredSongs[Math.floor(Math.random() * filteredSongs.length)];
-      while (newSong.id === currentSong?.id && filteredSongs.length > 1) {
-        newSong =
-          filteredSongs[Math.floor(Math.random() * filteredSongs.length)];
+      let fullyFiltered = filteredSongs.filter(
+        (song) => !songsPlayed.includes(song.id),
+      );
+      if (!fullyFiltered.length) {
+        setSongsPlayed(currentSong?.id ? [currentSong.id] : []);
+        fullyFiltered =
+          filteredSongs.length === 1
+            ? filteredSongs
+            : filteredSongs.filter((song) => song.id !== currentSong?.id);
+        song = fullyFiltered[Math.floor(Math.random() * fullyFiltered.length)];
+      } else {
+        song = fullyFiltered[Math.floor(Math.random() * fullyFiltered.length)];
+        setSongsPlayed([...songsPlayed, song.id]);
       }
-      song = newSong;
+    } else {
+      setSongsPlayed([]);
     }
     setCurrentSong(song);
     audio.src = URL.createObjectURL(song.blob);
@@ -494,74 +510,148 @@ const App: React.FC = () => {
             }
           }
         })()}
-        <div className='bg-gradient-to-br from-blue-800 to-cyan-800 p-5 bg-fixed rounded-lg flex sm:flex-col gap-4'>
-          <img
-            alt={currentSong?.title}
-            className='bg-white h-20 w-20 sm:w-auto sm:h-48 rounded-lg sm:mx-auto'
-            src={
-              currentSong?.cover
-                ? songToCover[currentSong.id]?.cover
-                : emptyMusic
-            }
+        <div
+          className={
+            fullscreenSong
+              ? 'fixed inset-0 w-full h-full bg-gray-800 opacity-25 z-10'
+              : 'hidden'
+          }
+          onClick={() => setFullscreenSong(false)}
+        />
+        <div
+          className={
+            fullscreenSong
+              ? 'absolute inset-x-4 inset-y-0 z-10 sm:w-96 mx-auto justify-center flex flex-col h-full'
+              : undefined
+          }
+        >
+          <div
+            className={fullscreenSong ? 'h-full' : 'hidden'}
+            onClick={() => setFullscreenSong(false)}
           />
-          <div className='flex flex-col sm:items-center text-white justify-between w-full'>
-            <p className='text-xl truncate w-56 sm:w-full sm:text-center'>
-              {currentSong?.title || 'No Song Playing'}
-            </p>
-            <p className='hidden sm:inline'>
-              {(!currentSong ||
-                (!currentSong?.artist && !currentSong?.album)) &&
-                '-'}
-              {currentSong?.artist}
-              {currentSong?.artist && currentSong?.album && ': '}
-              {currentSong?.album}
-            </p>
-            <div className='-ml-1 sm:ml-0 flex my-1 items-center'>
-              {playing ? (
-                <PauseIcon
-                  className='h-8 cursor-pointer'
-                  onClick={() => audio.pause()}
-                />
-              ) : (
-                <PlayIcon
-                  className={classNames(
-                    'h-8',
-                    currentSong ? 'cursor-pointer' : 'cursor-not-allowed',
-                  )}
-                  onClick={currentSong ? () => audio.play() : undefined}
-                />
+          <div
+            className={classNames(
+              {
+                'flex-col': fullscreenSong,
+              },
+              'bg-gradient-to-br from-blue-800 to-cyan-800 p-5 bg-fixed rounded-lg flex sm:flex-col gap-4',
+            )}
+          >
+            <img
+              alt={currentSong?.title}
+              className={classNames(
+                fullscreenSong
+                  ? 'w-full max-h-[21.5rem]'
+                  : 'h-20 w-20 sm:w-auto sm:h-48',
+                'bg-white rounded-lg sm:mx-auto',
               )}
-              <svg
-                viewBox='0 0 512 512'
-                className='h-8 rotate-180 cursor-pointer mr-1'
-                onClick={() => playSong()}
-              >
-                <path
-                  fill='currentColor'
-                  d='M48 256c0 114.69 93.31 208 208 208s208-93.31 208-208S370.69 48 256 48 48 141.31 48 256zm128-64a16 16 0 0132 0v53l111.68-67.46a10.78 10.78 0 0116.32 9.33v138.26a10.78 10.78 0 01-16.32 9.31L208 267v53a16 16 0 01-32 0z'
-                />
-              </svg>
-              {audio.currentTime
-                ? `${Math.floor(audio.currentTime / 60)}:${Math.floor(
-                    audio.currentTime % 60,
-                  ).toLocaleString('en-US', { minimumIntegerDigits: 2 })}/`
-                : null}
-              {duration
-                ? `${Math.floor(duration / 60)}:${Math.floor(
-                    duration % 60,
-                  ).toLocaleString('en-US', { minimumIntegerDigits: 2 })}`
-                : null}
-            </div>
-            <input
-              type='range'
-              className='w-full'
-              value={audio.currentTime}
-              onChange={(e) => (audio.currentTime = +e.target.value)}
-              min={0}
-              max={isFinite(audio.duration) ? audio.duration : 1}
-              step={1e-9}
+              src={
+                currentSong?.cover
+                  ? songToCover[currentSong.id]?.cover
+                  : emptyMusic
+              }
             />
+            <div
+              className={classNames(
+                { 'items-center text-3xl': fullscreenSong },
+                'flex flex-col sm:items-center text-white justify-between w-full',
+              )}
+            >
+              <p
+                className={
+                  fullscreenSong
+                    ? 'text-4xl truncate w-full text-center'
+                    : 'text-xl truncate w-56 sm:w-full sm:text-center'
+                }
+              >
+                {currentSong?.title || 'No Song Playing'}
+              </p>
+              <p
+                className={
+                  fullscreenSong ? 'text-xl text-center' : 'hidden sm:inline'
+                }
+              >
+                {(!currentSong ||
+                  (!currentSong?.artist && !currentSong?.album)) &&
+                  '-'}
+                {currentSong?.artist}
+                {currentSong?.artist && currentSong?.album && ': '}
+                {currentSong?.album}
+              </p>
+              <div className='-ml-1 sm:ml-0 flex my-1 items-center'>
+                {playing ? (
+                  <PauseIcon
+                    className={classNames(
+                      fullscreenSong ? 'h-16' : 'h-8',
+                      'cursor-pointer',
+                    )}
+                    onClick={() => audio.pause()}
+                  />
+                ) : (
+                  <PlayIcon
+                    className={classNames(
+                      fullscreenSong ? 'h-16' : 'h-8',
+                      currentSong ? 'cursor-pointer' : 'cursor-not-allowed',
+                    )}
+                    onClick={currentSong ? () => audio.play() : undefined}
+                  />
+                )}
+                <svg
+                  viewBox='0 0 512 512'
+                  className={classNames(
+                    fullscreenSong ? 'h-16' : 'h-8',
+                    'cursor-pointer rotate-180',
+                  )}
+                  onClick={() => playSong()}
+                >
+                  <path
+                    fill='currentColor'
+                    d='M48 256c0 114.69 93.31 208 208 208s208-93.31 208-208S370.69 48 256 48 48 141.31 48 256zm128-64a16 16 0 0132 0v53l111.68-67.46a10.78 10.78 0 0116.32 9.33v138.26a10.78 10.78 0 01-16.32 9.31L208 267v53a16 16 0 01-32 0z'
+                  />
+                </svg>
+                {fullscreenSong ? (
+                  <XIcon
+                    onClick={() => setFullscreenSong(false)}
+                    className={classNames(
+                      fullscreenSong ? 'h-16' : 'h-8',
+                      'cursor-pointer mr-1',
+                    )}
+                  />
+                ) : (
+                  <ArrowsExpandIcon
+                    onClick={() => setFullscreenSong(true)}
+                    className={classNames(
+                      fullscreenSong ? 'h-16' : 'h-8',
+                      'cursor-pointer mr-1',
+                    )}
+                  />
+                )}
+                {audio.currentTime
+                  ? `${Math.floor(audio.currentTime / 60)}:${Math.floor(
+                      audio.currentTime % 60,
+                    ).toLocaleString('en-US', { minimumIntegerDigits: 2 })}/`
+                  : null}
+                {duration
+                  ? `${Math.floor(duration / 60)}:${Math.floor(
+                      duration % 60,
+                    ).toLocaleString('en-US', { minimumIntegerDigits: 2 })}`
+                  : null}
+              </div>
+              <input
+                type='range'
+                className='w-full'
+                value={audio.currentTime}
+                onChange={(e) => (audio.currentTime = +e.target.value)}
+                min={0}
+                max={isFinite(audio.duration) ? audio.duration : 1}
+                step={1e-9}
+              />
+            </div>
           </div>
+          <div
+            className={fullscreenSong ? 'h-full' : 'hidden'}
+            onClick={() => setFullscreenSong(false)}
+          />
         </div>
       </div>
       {(() => {
