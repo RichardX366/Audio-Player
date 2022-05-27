@@ -89,6 +89,8 @@ const App: React.FC = () => {
   const [showEditSong, setShowEditSong] = useState(false);
   const [songsPlayed, setSongsPlayed] = useState<string[]>([]);
   const [fullscreenSong, setFullscreenSong] = useState(false);
+  const [purgeNotSelected, setPurgeNotSelected] = useState(false);
+  let songsNotToPurge: string[] = [];
   const createAlbumForm = useHookstate({
     name: '',
     followAllRules: false,
@@ -204,6 +206,7 @@ const App: React.FC = () => {
 
   const handleAddSong = async (song: google.picker.DocumentObject) => {
     try {
+      if (purgeNotSelected) songsNotToPurge.push(song.id);
       const duplicate = await db.songs.get(song.id);
       if (duplicate && duplicate.lastEditedUtc >= song.lastEditedUtc) {
         return;
@@ -227,7 +230,6 @@ const App: React.FC = () => {
           db.songs.add(formatSongToStorage({ ...song, blob, metaData }));
         }
       }
-      return;
     } catch (e) {
       throw e;
     }
@@ -239,7 +241,7 @@ const App: React.FC = () => {
       q: `'${folder.id}' in parents and (mimeType contains 'audio/' or mimeType = 'application/vnd.google-apps.folder')`,
       fields: 'files(id, modifiedTime, name, mimeType)',
     });
-    await Promise.all(
+    return Promise.all(
       list.result.files?.map(async (songOrFolder) => {
         const doc = {
           id: songOrFolder.id as string,
@@ -269,6 +271,12 @@ const App: React.FC = () => {
           }
         }),
       );
+      if (purgeNotSelected)
+        db.songs.bulkDelete(
+          songs
+            ?.filter((song) => !songsNotToPurge.includes(song.id))
+            ?.map((song) => song.id) || [],
+        );
       notify({ description: 'Songs uploaded and updated' });
       setLoadingNewSongs(false);
       lastUpdated.set(dayjs().format('MMM D, YYYY'));
@@ -442,16 +450,32 @@ const App: React.FC = () => {
             loadingNewSongs || !user
               ? 'bg-gray-100 cursor-not-allowed'
               : 'hover:bg-gray-100 bg-white',
-            'w-full p-2 rounded-lg text-lg transition-colors relative',
+            'w-full p-2 rounded-lg text-lg transition-colors relative flex justify-evenly',
           )}
-          onClick={createPicker}
+          onClick={(e) =>
+            (e.target as HTMLElement).tagName !== 'INPUT' && createPicker()
+          }
           disabled={loadingNewSongs || !user}
         >
-          {loadingNewSongs && <Spinner size='absolute h-7 inset-4' />}
-          Upload or Update a Song
-          <p className='text-xs text-gray-500'>
-            Last Updated: {lastUpdated.value}
-          </p>
+          <div>
+            {loadingNewSongs && <Spinner size='absolute h-7 inset-4' />}
+            Upload or Update a Song
+            <p className='text-xs text-gray-500'>
+              Last Updated: {lastUpdated.value}
+            </p>
+          </div>
+          <div className='flex h-full justify-center items-center gap-2'>
+            <label className='text-xs text-right text-gray-500 pointer-events-none cursor-pointer'>
+              Purge Songs <br /> Not Selected
+            </label>
+            <input
+              name='purgeNotSelected'
+              type='checkbox'
+              className='focus:ring-THEME-500 h-4 w-4 text-THEME-600 border-gray-300 rounded cursor-pointer'
+              onChange={() => setPurgeNotSelected(!purgeNotSelected)}
+              checked={purgeNotSelected}
+            />
+          </div>
         </button>
         <span className='relative z-0 flex shadow-sm rounded-md'>
           {Object.values(Page).map((pageName, idx, { length }) => (
